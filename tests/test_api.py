@@ -14,6 +14,22 @@ class InvoicePilotTest(unittest.TestCase):
             count = connection.execute("SELECT COUNT(*) FROM customers WHERE name LIKE 'Transient%'").fetchone()[0]
         self.assertEqual(count, 0)
 
+    def test_invoice_status_change_audit_trail(self):
+        customer=self.client.post('/api/customers',json={'name':'Audit Customer','email':'audit@example.com'}).json()['id']
+        invoice=self.client.post('/api/invoices',json={
+            'customer_id':customer,'lines':[{'description':'Audit item','quantity':1,'unit_price_cents':500}]
+        }).json()['id']
+        endpoint=f'/api/invoices/{invoice}/events'
+        self.assertEqual(self.client.get(endpoint).json(),[])
+        self.assertEqual(self.client.patch(f'/api/invoices/{invoice}/status',json={'status':'sent'}).status_code,200)
+        self.assertEqual(self.client.patch(f'/api/invoices/{invoice}/status',json={'status':'paid'}).status_code,200)
+        events=self.client.get(endpoint).json()
+        self.assertEqual([(e['from_status'],e['to_status']) for e in events],
+                         [('draft','sent'),('sent','paid')])
+        self.assertEqual(self.client.patch(f'/api/invoices/{invoice}/status',json={'status':'draft'}).status_code,409)
+        self.assertEqual(len(self.client.get(endpoint).json()),2)
+        self.assertEqual(self.client.get('/api/invoices/999999/events').status_code,404)
+
     def test_csv_export_endpoint(self):
         response=self.client.get('/api/export/invoices.csv')
         self.assertEqual(response.status_code,200)
