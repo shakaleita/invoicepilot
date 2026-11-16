@@ -31,12 +31,12 @@ class Customer(BaseModel):
     email: str = Field(min_length=3)
 class Line(BaseModel):
     description: str = Field(min_length=1)
-    quantity: int = Field(gt=0)
-    unit_price_cents: int = Field(ge=0)
+    quantity: int = Field(gt=0, le=10000)
+    unit_price_cents: int = Field(ge=0, le=100000000)
 class Invoice(BaseModel):
     customer_id: int
     tax_percent: Decimal = Field(default=Decimal('0'),ge=0,le=100)
-    lines: list[Line] = Field(min_length=1)
+    lines: list[Line] = Field(min_length=1, max_length=200)
 class Status(BaseModel):
     status: str
 
@@ -59,6 +59,23 @@ def create_customer(customer:Customer):
 def invoices():
     with conn() as db:
         return [detail(db,r['id']) for r in db.execute('SELECT id FROM invoices ORDER BY id DESC').fetchall()]
+@app.get('/api/collections')
+def collections():
+    """Age outstanding *sent* invoices by creation date (not a contractual due date)."""
+    with conn() as db:
+        pending=db.execute("""SELECT id,CAST(julianday('now')-julianday(created_at) AS INTEGER) age_days
+            FROM invoices WHERE status='sent' ORDER BY id""").fetchall()
+        buckets={'0_30':{'invoices':0,'total_cents':0},
+                 '31_60':{'invoices':0,'total_cents':0},
+                 '61_plus':{'invoices':0,'total_cents':0}}
+        for invoice in pending:
+            days=max(0,invoice['age_days'] or 0)
+            key='0_30' if days<=30 else '31_60' if days<=60 else '61_plus'
+            buckets[key]['invoices']+=1
+            buckets[key]['total_cents']+=detail(db,invoice['id'])['total_cents']
+        return {'method':'invoice_creation_age_not_due_date',
+                'outstanding_invoices':len(pending),'buckets':buckets}
+
 @app.get('/api/invoices/{invoice_id}')
 def get_invoice(invoice_id:int):
     with conn() as db:return detail(db,invoice_id)
