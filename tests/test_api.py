@@ -2,6 +2,18 @@ import os, tempfile, unittest, importlib, sys
 from pathlib import Path
 from fastapi.testclient import TestClient
 class InvoicePilotTest(unittest.TestCase):
+    def test_transaction_rolls_back_on_failure(self):
+        """An exception must never leave a partially written transaction."""
+        from importlib import import_module
+        db_module = import_module('main')
+        with self.assertRaises(RuntimeError):
+            with db_module.conn() as connection:
+                connection.execute("INSERT INTO customers(name,email) VALUES ('Transient Customer','transient@example.com')")
+                raise RuntimeError('simulate failed transaction')
+        with db_module.conn() as connection:
+            count = connection.execute("SELECT COUNT(*) FROM customers WHERE name LIKE 'Transient%'").fetchone()[0]
+        self.assertEqual(count, 0)
+
     def test_csv_export_endpoint(self):
         response=self.client.get('/api/export/invoices.csv')
         self.assertEqual(response.status_code,200)
