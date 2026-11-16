@@ -24,7 +24,8 @@ def conn():
 with conn() as db:
     db.executescript("""CREATE TABLE IF NOT EXISTS customers(id INTEGER PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS invoices(id INTEGER PRIMARY KEY,customer_id INTEGER NOT NULL REFERENCES customers(id),status TEXT NOT NULL DEFAULT 'draft',tax_percent TEXT NOT NULL DEFAULT '0',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS lines(id INTEGER PRIMARY KEY,invoice_id INTEGER NOT NULL REFERENCES invoices(id),description TEXT NOT NULL,quantity INTEGER NOT NULL,unit_price_cents INTEGER NOT NULL);""")
+    CREATE TABLE IF NOT EXISTS lines(id INTEGER PRIMARY KEY,invoice_id INTEGER NOT NULL REFERENCES invoices(id),description TEXT NOT NULL,quantity INTEGER NOT NULL,unit_price_cents INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS invoice_events(id INTEGER PRIMARY KEY,invoice_id INTEGER NOT NULL REFERENCES invoices(id),from_status TEXT NOT NULL,to_status TEXT NOT NULL,changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);""")
 class Customer(BaseModel):
     name: str = Field(min_length=1)
     email: str = Field(min_length=3)
@@ -74,8 +75,19 @@ def update_status(invoice_id:int,payload:Status):
     with conn() as db:
         old=detail(db,invoice_id)['status']
         if old in ('paid','void') and payload.status!=old:raise HTTPException(409,'Finalised invoice cannot be changed')
-        db.execute('UPDATE invoices SET status=? WHERE id=?',(payload.status,invoice_id))
+        if old != payload.status:
+            db.execute('UPDATE invoices SET status=? WHERE id=?',(payload.status,invoice_id))
+            db.execute('INSERT INTO invoice_events(invoice_id,from_status,to_status) VALUES(?,?,?)',(invoice_id,old,payload.status))
         return detail(db,invoice_id)
+@app.get('/api/invoices/{invoice_id}/events')
+def invoice_events(invoice_id:int):
+    """Return an immutable, chronological audit trail of invoice status changes."""
+    with conn() as db:
+        detail(db,invoice_id)
+        return [dict(row) for row in db.execute(
+            'SELECT id,invoice_id,from_status,to_status,changed_at FROM invoice_events WHERE invoice_id=? ORDER BY id',
+            (invoice_id,)).fetchall()]
+
 @app.get('/',response_class=HTMLResponse)
 def home():return Path(__file__).with_name('index.html').read_text(encoding='utf8')
 
