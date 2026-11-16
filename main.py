@@ -91,3 +91,20 @@ async def security_headers(request,call_next):
     response.headers['Referrer-Policy']='no-referrer'
     response.headers['X-Frame-Options']='DENY'
     return response
+
+# Local demos work without credentials. Production APIs require an explicit token.
+import hmac
+from fastapi.responses import JSONResponse
+
+@app.middleware('http')
+async def require_api_auth(request, call_next):
+    path = request.url.path
+    if path.startswith('/api/') and path != '/api/health':
+        token = os.getenv('API_TOKEN')
+        if os.getenv('APP_ENV') == 'production' or token:
+            if not token:
+                return JSONResponse({'error': 'API authentication must be configured in production'}, status_code=503)
+            if not hmac.compare_digest(request.headers.get('x-api-token', ''), token):
+                return JSONResponse({'error': 'Unauthorized'}, status_code=401)
+    return await call_next(request)
+
