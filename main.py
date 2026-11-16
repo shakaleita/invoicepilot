@@ -1,6 +1,7 @@
 import os, sqlite3
 from contextlib import contextmanager
 from decimal import Decimal, ROUND_HALF_UP
+from datetime import date
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -26,6 +27,9 @@ with conn() as db:
     CREATE TABLE IF NOT EXISTS invoices(id INTEGER PRIMARY KEY,customer_id INTEGER NOT NULL REFERENCES customers(id),status TEXT NOT NULL DEFAULT 'draft',tax_percent TEXT NOT NULL DEFAULT '0',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS lines(id INTEGER PRIMARY KEY,invoice_id INTEGER NOT NULL REFERENCES invoices(id),description TEXT NOT NULL,quantity INTEGER NOT NULL,unit_price_cents INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS invoice_events(id INTEGER PRIMARY KEY,invoice_id INTEGER NOT NULL REFERENCES invoices(id),from_status TEXT NOT NULL,to_status TEXT NOT NULL,changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);""")
+    columns={row['name'] for row in db.execute("PRAGMA table_info(invoices)")}
+    if 'due_date' not in columns:
+        db.execute("ALTER TABLE invoices ADD COLUMN due_date TEXT")
 class Customer(BaseModel):
     name: str = Field(min_length=1)
     email: str = Field(min_length=3)
@@ -37,6 +41,7 @@ class Invoice(BaseModel):
     customer_id: int
     tax_percent: Decimal = Field(default=Decimal('0'),ge=0,le=100)
     lines: list[Line] = Field(min_length=1, max_length=200)
+    due_date: date | None = None
 class Status(BaseModel):
     status: str
 
@@ -63,18 +68,26 @@ def invoices():
 def collections():
     """Age outstanding *sent* invoices by creation date (not a contractual due date)."""
     with conn() as db:
-        pending=db.execute("""SELECT id,CAST(julianday('now')-julianday(created_at) AS INTEGER) age_days
+        pending=db.execute("""SELECT id,due_date,CAST(julianday('now')-julianday(created_at) AS INTEGER) age_days
             FROM invoices WHERE status='sent' ORDER BY id""").fetchall()
         buckets={'0_30':{'invoices':0,'total_cents':0},
                  '31_60':{'invoices':0,'total_cents':0},
                  '61_plus':{'invoices':0,'total_cents':0}}
+        overdue_count=0
+        overdue_cents=0
+        today=date.today().isoformat()
         for invoice in pending:
             days=max(0,invoice['age_days'] or 0)
             key='0_30' if days<=30 else '31_60' if days<=60 else '61_plus'
+            amount=detail(db,invoice['id'])['total_cents']
             buckets[key]['invoices']+=1
-            buckets[key]['total_cents']+=detail(db,invoice['id'])['total_cents']
-        return {'method':'invoice_creation_age_not_due_date',
-                'outstanding_invoices':len(pending),'buckets':buckets}
+            buckets[key]['total_cents']+=amount
+            if invoice['due_date'] and invoice['due_date']<today:
+                overdue_count+=1
+                overdue_cents+=amount
+        return {'method':'invoice_creation_age_plus_explicit_due_date',
+                'outstanding_invoices':len(pending),'buckets':buckets,
+                'overdue_invoices':overdue_count,'overdue_cents':overdue_cents}
 
 @app.get('/api/invoices/{invoice_id}')
 def get_invoice(invoice_id:int):
@@ -83,7 +96,9 @@ def get_invoice(invoice_id:int):
 def create_invoice(invoice:Invoice):
     with conn() as db:
         if not db.execute('SELECT 1 FROM customers WHERE id=?',(invoice.customer_id,)).fetchone():raise HTTPException(404,'Customer not found')
-        cur=db.execute('INSERT INTO invoices(customer_id,tax_percent) VALUES(?,?)',(invoice.customer_id,str(invoice.tax_percent)))
+        cur=db.execute('INSERT INTO invoices(customer_id,tax_percent,due_date) VALUES(?,?,?)',
+                       (invoice.customer_id,str(invoice.tax_percent),
+                        invoice.due_date.isoformat() if invoice.due_date else None))
         db.executemany('INSERT INTO lines(invoice_id,description,quantity,unit_price_cents) VALUES(?,?,?,?)',[(cur.lastrowid,x.description,x.quantity,x.unit_price_cents) for x in invoice.lines])
         return detail(db,cur.lastrowid)
 @app.patch('/api/invoices/{invoice_id}/status')
