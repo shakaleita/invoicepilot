@@ -108,3 +108,17 @@ async def require_api_auth(request, call_next):
                 return JSONResponse({'error': 'Unauthorized'}, status_code=401)
     return await call_next(request)
 
+
+
+@app.get('/api/export/invoices.csv')
+def export_invoices_csv():
+    """Download a read-only snapshot of the local demo dataset."""
+    from fastapi.responses import Response
+    from data_export import serialize_csv
+    with conn() as connection:
+        cursor = connection.execute("SELECT id,customer_id,status,tax_percent,created_at FROM invoices ORDER BY id")
+        columns = [column[0] for column in cursor.description]
+        content = serialize_csv(cursor.fetchall(), columns)
+    return Response(content=content, media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition':'attachment; filename="invoices.csv"',
+                             'Cache-Control':'no-store'})
