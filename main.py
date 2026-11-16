@@ -16,7 +16,11 @@ def conn():
     try:
         yield db
         db.commit()
-    finally: db.close()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 with conn() as db:
     db.executescript("""CREATE TABLE IF NOT EXISTS customers(id INTEGER PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS invoices(id INTEGER PRIMARY KEY,customer_id INTEGER NOT NULL REFERENCES customers(id),status TEXT NOT NULL DEFAULT 'draft',tax_percent TEXT NOT NULL DEFAULT '0',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
