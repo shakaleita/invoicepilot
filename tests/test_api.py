@@ -2,6 +2,14 @@ import os, tempfile, unittest, importlib, sys
 from pathlib import Path
 from fastapi.testclient import TestClient
 class InvoicePilotTest(unittest.TestCase):
+    def test_csv_export_endpoint(self):
+        response=self.client.get('/api/export/invoices.csv')
+        self.assertEqual(response.status_code,200)
+        self.assertIn('text/csv',response.headers['content-type'])
+        self.assertEqual(response.headers['cache-control'],'no-store')
+        self.assertIn('"id"',response.text)
+
+
     @classmethod
     def setUpClass(cls):
         cls.tmp=tempfile.TemporaryDirectory()
